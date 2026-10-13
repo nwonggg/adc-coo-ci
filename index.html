@@ -559,7 +559,7 @@
   <header style="margin-bottom:28px;">
     <div>
       <h1>COO Generator</h1>
-      <p>Packing slip PDF in, Certificate of Origin Word doc out. Only top-level (bold) kit lines are pulled in as Marks and Numbers.</p>
+      <p>Packing slip PDF(s) in, Certificate of Origin Word doc out. Only top-level (bold) kit lines are pulled in as Marks and Numbers, each part listed once.</p>
     </div>
   </header>
 
@@ -567,10 +567,10 @@
   <div class="panel" id="cooUploadPanel">
     <div id="cooDropzone">
       <div class="icon">📄</div>
-      <div class="main">Drop a packing slip PDF here, or click to choose</div>
-      <div class="sub">Pulls the top-level (bold) part lines and the Ship To address</div>
+      <div class="main">Drop one or more packing slip PDFs here, or click to choose</div>
+      <div class="sub">Pulls the top-level (bold) part lines and the Ship To address. Repeated parts are listed once.</div>
     </div>
-    <input type="file" id="cooFileInput" accept="application/pdf">
+    <input type="file" id="cooFileInput" accept="application/pdf" multiple>
     <div class="status-row hidden" id="cooStatusRow">
       <div class="file-chip" id="cooFileChip"></div>
     </div>
@@ -609,7 +609,10 @@
       <label for="cooAddressLine2">Address Line 2 <span class="char-count" id="cooAddr2Count"></span></label>
       <input type="text" id="cooAddressLine2" placeholder="Street, city, postal code, country">
     </div>
-  </div>
+    <div class="coo-field" style="margin-top:14px;max-width:260px;">
+      <label for="cooBoxCount">Total Box Count <span class="manual-tag">manual</span></label>
+      <input type="number" id="cooBoxCount" min="1" step="1" inputmode="numeric" placeholder="e.g. 5">
+    </div>
 
   <p class="eyebrow" id="cooLineItemsEyebrow" style="display:none;">MARKS AND NUMBERS</p>
   <div class="panel" id="cooDataPanel" style="display:none;">
@@ -1156,10 +1159,11 @@ const cooAddressLine2Input = document.getElementById('cooAddressLine2');
 const cooAddr1Count = document.getElementById('cooAddr1Count');
 const cooAddr2Count = document.getElementById('cooAddr2Count');
 const cooAddRowBtn = document.getElementById('cooAddRowBtn');
+const cooBoxCountInput = document.getElementById('cooBoxCount');
 const cooClearBtn = document.getElementById('cooClearBtn');
 const cooExportBtn = document.getElementById('cooExportBtn');
 
-let cooPendingFile = null;
+let cooPendingFiles = [];
 let cooOrderNumber = '';
 let cooRows = [];
 let cooRowId = 0;
@@ -1178,26 +1182,30 @@ cooDropzone.addEventListener('dragleave', ()=> cooDropzone.classList.remove('dra
 cooDropzone.addEventListener('drop', e=>{
   e.preventDefault();
   cooDropzone.classList.remove('drag');
-  if(e.dataTransfer.files.length) cooSelectFile(e.dataTransfer.files[0]);
+  if(e.dataTransfer.files.length) cooSelectFiles(e.dataTransfer.files);
 });
 cooFileInput.addEventListener('change', e=>{
-  if(e.target.files.length) cooSelectFile(e.target.files[0]);
+  if(e.target.files.length) cooSelectFiles(e.target.files);
+  e.target.value = '';
 });
 cooUploadBtn.addEventListener('click', ()=> cooFileInput.click());
 
-function cooSelectFile(file){
-  if(file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')){
-    showToast('Please upload a PDF file', true);
-    return;
-  }
-  cooPendingFile = file;
-  cooFileChip.innerHTML = `📄 <b>${file.name}</b>`;
+function cooSelectFiles(fileList){
+  const files = Array.from(fileList);
+  const pdfs = files.filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+  if(pdfs.length < files.length) showToast('Only PDF files can be used. Other files were skipped.', true);
+  if(!pdfs.length) return;
+  // Adds to what's already selected, so slips can be picked one at a time or together
+  pdfs.forEach(f => {
+    if(!cooPendingFiles.some(p => p.name === f.name && p.size === f.size)) cooPendingFiles.push(f);
+  });
+  cooFileChip.innerHTML = cooPendingFiles.map(f => `📄 <b>${escapeHtml(f.name)}</b>`).join('<br>');
   cooStatusRow.classList.remove('hidden');
   cooSubmitBtn.disabled = false;
 }
 
 cooClearUploadBtn.addEventListener('click', () => {
-  cooPendingFile = null;
+  cooPendingFiles = [];
   cooFileInput.value = '';
   cooStatusRow.classList.add('hidden');
   cooFileChip.innerHTML = '';
@@ -1205,7 +1213,7 @@ cooClearUploadBtn.addEventListener('click', () => {
 });
 
 cooSubmitBtn.addEventListener('click', () => {
-  if(cooPendingFile) cooHandleFile(cooPendingFile);
+  if(cooPendingFiles.length) cooHandleFiles(cooPendingFiles);
 });
 
 function todayFormatted(){
@@ -1215,33 +1223,75 @@ function todayFormatted(){
   return `${mm}/${dd}/${d.getFullYear()}`;
 }
 
-async function cooHandleFile(file){
+// Description on the COO stops at the first ";" (the rest of the packing slip text is kit detail)
+function cooShortDescription(desc){
+  return (desc || '').split(';')[0].replace(/\s+/g, ' ').trim();
+}
+
+async function cooHandleFiles(files){
   const originalLabel = cooSubmitBtn.textContent;
   cooSubmitBtn.disabled = true;
   cooSubmitBtn.textContent = 'Parsing…';
   try{
-    const buf = await file.arrayBuffer();
-    const { orderNumber, shipToLines, topLevelItems } = await parsePackingSlipPdf(buf);
+    const orderNumbers = [];
+    const seenParts = new Map();   // part number -> row, so each top-level part appears once across all slips
+    let totalFound = 0;
+    let addrLines = null;
+    let addressMismatch = false;
+    const failed = [];
 
-    if(!topLevelItems.length){
-      showToast('No top-level (bold) line items detected — check the PDF or add rows manually', true);
-    } else {
-      showToast(`Parsed ${topLevelItems.length} top-level item${topLevelItems.length===1?'':'s'}`);
+    for(const file of files){
+      let parsed;
+      try{
+        parsed = await parsePackingSlipPdf(await file.arrayBuffer());
+      }catch(err){
+        console.error(err);
+        failed.push(file.name);
+        continue;
+      }
+      const { orderNumber, shipToLines, topLevelItems } = parsed;
+      if(orderNumber && !orderNumbers.includes(orderNumber)) orderNumbers.push(orderNumber);
+
+      const lines = shipToLines.filter(l => !/^phone/i.test(l) && !l.includes('@'));
+      if(lines.length){
+        if(!addrLines) addrLines = lines;
+        else if(lines.join('|').toLowerCase() !== addrLines.join('|').toLowerCase()) addressMismatch = true;
+      }
+
+      topLevelItems.forEach(li => {
+        totalFound++;
+        if(!seenParts.has(li.part)) seenParts.set(li.part, cooShortDescription(li.description));
+      });
     }
 
-    cooOrderNumber = orderNumber || '';
+    if(failed.length) showToast(`Could not read: ${failed.join(', ')}`, true);
+    const uniqueCount = seenParts.size;
+    const dupes = totalFound - uniqueCount;
+    if(!uniqueCount){
+      showToast('No top-level (bold) line items detected — check the PDF or add rows manually', true);
+    } else {
+      const slips = files.length - failed.length;
+      let msg = `Parsed ${uniqueCount} top-level part${uniqueCount===1?'':'s'} from ${slips} packing slip${slips===1?'':'s'}`;
+      if(dupes) msg += ` (${dupes} repeat${dupes===1?'':'s'} combined)`;
+      if(!failed.length) showToast(msg);
+    }
+    if(addressMismatch){
+      setTimeout(() => showToast('These packing slips have different Ship To addresses. The first one was used, please check it.', true), 2800);
+    }
+
+    cooOrderNumber = orderNumbers.join('_');
     cooDateInput.value = todayFormatted();
-    const addrLines = shipToLines.filter(l => !/^phone/i.test(l) && !l.includes('@'));
-    cooAddressLine1Input.value = addrLines[0] || '';
-    cooAddressLine2Input.value = addrLines.slice(1).join(', ');
+    cooAddressLine1Input.value = addrLines ? (addrLines[0] || '') : '';
+    cooAddressLine2Input.value = addrLines ? addrLines.slice(1).map(l => l.replace(/,\s*$/, '')).join(', ') : '';
     updateAddrCount(cooAddressLine1Input, cooAddr1Count, 55);
     updateAddrCount(cooAddressLine2Input, cooAddr2Count, 90);
-    cooRows = topLevelItems.map(li => ({
+    const boxes = cooBoxCountInput.value.trim();
+    cooRows = Array.from(seenParts, ([part, desc]) => ({
       id: cooRowId++,
-      part: li.part,
-      pkgs: '',
+      part,
+      pkgs: boxes,
       weight: '',
-      desc: li.description
+      desc
     }));
 
     cooFieldsEyebrow.style.display = 'block';
@@ -1252,11 +1302,48 @@ async function cooHandleFile(file){
     cooRenderRows();
   }catch(err){
     console.error(err);
-    showToast('Could not read that PDF: ' + (err && err.message ? err.message : 'unknown error'), true);
+    showToast('Could not read those PDFs: ' + (err && err.message ? err.message : 'unknown error'), true);
   }finally{
     cooSubmitBtn.disabled = false;
     cooSubmitBtn.textContent = originalLabel;
   }
+}
+
+// Total Box Count fills the "No. of Pkgs" column on every row
+cooBoxCountInput.addEventListener('input', () => {
+  const v = cooBoxCountInput.value.trim();
+  cooRows.forEach(r => { r.pkgs = v; });
+  cooRowsBody.querySelectorAll('input[data-field="pkgs"]').forEach(inp => {
+    inp.value = v;
+    inp.parentElement.className = v ? 'filled' : 'manual';
+  });
+});
+
+// Returns the set of font ids (from the given list) that are bold, using pdf.js font data.
+// Falls back to treating the less common font as bold if font details aren't available.
+async function cooBoldFonts(page, fontIds){
+  const unique = [...new Set(fontIds)];
+  const bold = new Set();
+  let known = 0;
+  try{
+    await page.getOperatorList(); // makes sure the page's fonts are loaded
+    unique.forEach(id => {
+      try{
+        const f = page.commonObjs.get(id);
+        if(f){
+          known++;
+          if(f.bold || f.black || /bold|black|heavy|semibold|demi/i.test(f.name || '')) bold.add(id);
+        }
+      }catch(e){}
+    });
+  }catch(e){}
+  if(known === unique.length) return bold;
+  // Fallback: least common font among part numbers is assumed bold (only used if font data is missing)
+  const counts = {};
+  fontIds.forEach(id => counts[id] = (counts[id]||0) + 1);
+  const sorted = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+  sorted.slice(1).forEach(([id]) => bold.add(id));
+  return bold;
 }
 
 async function parsePackingSlipPdf(arrayBuffer){
@@ -1264,6 +1351,7 @@ async function parsePackingSlipPdf(arrayBuffer){
   let orderNumber = '';
   let shipToLines = [];
   const topLevelItems = [];
+  let tableStarted = false;
 
   for(let p=1; p<=pdf.numPages; p++){
     const page = await pdf.getPage(p);
@@ -1300,27 +1388,53 @@ async function parsePackingSlipPdf(arrayBuffer){
 
     const headerLabels = ['PART','LOT','NUMBER','SHIPPING','STORAGE','CONDITIONS','DESCRIPTION','QUANTITY'];
     const headerYs = items.filter(i => headerLabels.includes(i.str)).map(i=>i.y);
-    if(!headerYs.length) continue; // page has no item table (e.g. terms page)
+    // A page without the column header is either a continuation of the table (page 2+) or a
+    // terms page. Continuation pages are only read once a table has started on an earlier page.
+    if(!headerYs.length && !tableStarted) continue;
+    tableStarted = true;
     const commentsItem = items.find(i => i.str === 'COMMENTS');
-    const tableTop = Math.min(...headerYs) - 3;
+    const tableTop = headerYs.length ? Math.min(...headerYs) - 3 : Infinity;
     const tableBottom = commentsItem ? commentsItem.y + 2 : -Infinity;
 
     const partItems = items.filter(i => i.x < 95 && i.y < tableTop && i.y > tableBottom && /^\d{5,7}$/.test(i.str));
     if(!partItems.length) continue;
 
-    const fontCounts = {};
-    partItems.forEach(i => fontCounts[i.font] = (fontCounts[i.font]||0)+1);
-    const regularFont = Object.entries(fontCounts).sort((a,b)=>b[1]-a[1])[0][0];
+    // Decide bold vs regular from the actual font, not from which style is more common:
+    // some slips have more bold rows than regular ones, and continuation pages can be all bold.
+    const boldFonts = await cooBoldFonts(page, partItems.map(i => i.font));
 
     const anchors = partItems.map(i => ({part:i.str, y:i.y, font:i.font})).sort((a,b)=>b.y-a.y);
 
-    anchors.forEach((a, idx) => {
-      if(a.font === regularFont) return; // regular (non-bold) row — skip
-      const topBound = idx===0 ? Math.min(a.y+40, tableTop) : (a.y + anchors[idx-1].y)/2;
-      const botBound = idx===anchors.length-1 ? Math.max(a.y-20, tableBottom) : (a.y + anchors[idx+1].y)/2;
-      const rowItems = items.filter(i => i.y > botBound && i.y <= topBound && i.x >= 150 && i.x < 373);
-      const descText = rowItems.sort((x,y)=> y.y-x.y || x.x-y.x).map(i=>i.str).join(' ').replace(/\s+/g,' ').trim();
-      topLevelItems.push({ part: a.part, description: descText });
+    // Group the description column into text lines, then into blocks. Lines inside one row's
+    // description sit ~9pt apart; separate rows are further apart. Each block belongs to the
+    // part number whose (vertically centred) position falls inside it.
+    const descItems = items.filter(i => i.y < tableTop && i.y > tableBottom && i.x >= 150 && i.x < 373);
+    const lineMapD = new Map();
+    descItems.forEach(it => {
+      let key = null;
+      for(const k of lineMapD.keys()){ if(Math.abs(k - it.y) <= 3){ key = k; break; } }
+      if(key === null) key = it.y;
+      if(!lineMapD.has(key)) lineMapD.set(key, []);
+      lineMapD.get(key).push(it);
+    });
+    const descLines = Array.from(lineMapD.keys()).sort((a,b)=>b-a).map(y => ({
+      y, text: lineMapD.get(y).sort((a,b)=>a.x-b.x).map(i=>i.str).join(' ').replace(/\s+/g,' ').trim()
+    }));
+    const blocks = [];
+    descLines.forEach(line => {
+      const last = blocks[blocks.length-1];
+      if(last && (last.bottom - line.y) <= 10.5){ last.lines.push(line.text); last.bottom = line.y; }
+      else blocks.push({ top: line.y, bottom: line.y, lines: [line.text] });
+    });
+    const joinLines = lines => lines.reduce((acc, l) => !acc ? l : (acc.endsWith('-') ? acc + l : acc + ' ' + l), '');
+
+    anchors.forEach(a => {
+      if(!boldFonts.has(a.font)) return; // regular (non-bold) row — a component inside a kit, skip
+      let block = blocks.find(b => a.y <= b.top + 4 && a.y >= b.bottom - 4);
+      if(!block && blocks.length){
+        block = blocks.reduce((best, b) => Math.abs((b.top+b.bottom)/2 - a.y) < Math.abs((best.top+best.bottom)/2 - a.y) ? b : best);
+      }
+      topLevelItems.push({ part: a.part, description: block ? joinLines(block.lines) : '' });
     });
   }
 
@@ -1334,7 +1448,7 @@ function cooRenderRows(){
     tr.innerHTML = `
       <td class="rownum">${idx+1}</td>
       <td><input type="text" data-field="part" value="${escapeHtml(r.part)}"></td>
-      <td class="manual"><input type="text" data-field="pkgs" value="${escapeHtml(r.pkgs)}" placeholder="—"></td>
+      <td class="${r.pkgs ? 'filled' : 'manual'}"><input type="text" data-field="pkgs" value="${escapeHtml(r.pkgs)}" placeholder="—"></td>
       <td class="manual"><input type="text" data-field="weight" value="${escapeHtml(r.weight)}" placeholder="—"></td>
       <td><input type="text" data-field="desc" value="${escapeHtml(r.desc)}"></td>
       <td><button class="delbtn" title="Remove row">✕</button></td>
@@ -1354,13 +1468,13 @@ function cooRenderRows(){
 }
 
 cooAddRowBtn.addEventListener('click', () => {
-  cooRows.push({ id: cooRowId++, part:'', pkgs:'', weight:'', desc:'' });
+  cooRows.push({ id: cooRowId++, part:'', pkgs: cooBoxCountInput.value.trim(), weight:'', desc:'' });
   cooRenderRows();
 });
 
 cooClearBtn.addEventListener('click', () => {
-  if(!cooRows.length) return;
   if(confirm('Clear all line items and declaration details?')){
+    cooBoxCountInput.value = '';
     cooRows = [];
     cooOrderNumber = '';
     cooDateInput.value = '';
@@ -1404,10 +1518,12 @@ function cooFillCell(cellXml, text){
   return cellXml.replace(emptyRunRe, filledRun);
 }
 
-function cooFillRow(rowXml, marks, description){
+function cooFillRow(rowXml, marks, description, pkgs, weight){
   const parts = rowXml.split('</w:tc>');
   if(parts.length < 4) return rowXml;
   parts[0] = cooFillCell(parts[0], marks);
+  if(pkgs) parts[1] = cooFillCell(parts[1], pkgs);
+  if(weight) parts[2] = cooFillCell(parts[2], weight);
   parts[3] = cooFillCell(parts[3], description);
   return parts.join('</w:tc>');
 }
@@ -1445,7 +1561,7 @@ cooExportBtn.addEventListener('click', async () => {
       const newDataRows = [];
       cooRows.forEach((r, i) => {
         const baseRow = i < existingDataRows.length ? existingDataRows[i] : dataRowTemplate;
-        newDataRows.push(cooFillRow(baseRow, r.part || '', r.desc || ''));
+        newDataRows.push(cooFillRow(baseRow, r.part || '', cooShortDescription(r.desc), (r.pkgs || '').trim(), (r.weight || '').trim()));
       });
       for(let i = cooRows.length; i < existingDataRows.length; i++){
         newDataRows.push(existingDataRows[i]);
