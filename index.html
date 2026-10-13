@@ -454,6 +454,21 @@
     border-color:var(--accent);
   }
 
+  /* Resizable table columns */
+  table.rtable{table-layout:fixed;}
+  table.rtable thead th{overflow:hidden;text-overflow:ellipsis;}
+  thead th{position:relative;}
+  .col-resizer{
+    position:absolute;top:0;right:0;width:10px;height:100%;
+    cursor:col-resize;z-index:2;touch-action:none;
+  }
+  .col-resizer::after{
+    content:'';position:absolute;right:3px;top:22%;height:56%;width:2px;border-radius:1px;
+    background:rgba(255,255,255,.45);transition:background .15s;
+  }
+  .col-resizer:hover::after,.col-resizer.active::after{background:#fff;}
+  body.col-resizing, body.col-resizing *{cursor:col-resize !important;user-select:none !important;}
+  .resize-hint{font-size:12px;color:var(--ink-faint);}
   .toast{
     position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
     background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:7px;
@@ -508,6 +523,7 @@
 
     <div class="toolbar">
       <span class="count" id="rowCount">0 rows</span>
+      <span class="resize-hint">Drag the column dividers to resize · double-click a divider to reset</span>
       <span class="date-progress" id="dateProgress"></span>
     </div>
 
@@ -618,6 +634,7 @@
   <div class="panel" id="cooDataPanel" style="display:none;">
     <div class="toolbar">
       <span class="count" id="cooRowCount">0 rows</span>
+      <span class="resize-hint">Drag the column dividers to resize · double-click a divider to reset</span>
     </div>
 
     <table>
@@ -1591,6 +1608,68 @@ cooExportBtn.addEventListener('click', async () => {
     showToast('Could not generate the Word doc: ' + (err && err.message ? err.message : 'unknown error'), true);
   }
 });
+
+/* ---------- Resizable columns (both tables) ----------
+   Dragging a divider moves width between the two neighbouring columns, so the table never
+   gets wider than the panel. Hovering any cell shows its full text as a tooltip. */
+function makeColumnsResizable(table){
+  const ths = [...table.querySelectorAll('thead th')];
+  let cg = table.querySelector('colgroup');
+  if(!cg){
+    cg = document.createElement('colgroup');
+    ths.forEach(() => cg.appendChild(document.createElement('col')));
+    table.insertBefore(cg, table.firstChild);
+  }
+  const cols = [...cg.children];
+  const freeze = () => {
+    if(!table.classList.contains('rtable')){
+      const ws = ths.map(th => th.getBoundingClientRect().width);
+      cols.forEach((c, i) => c.style.width = ws[i] + 'px');
+      table.classList.add('rtable');
+    }
+    return cols.map(c => parseFloat(c.style.width));
+  };
+  ths.slice(0, -1).forEach((th, i) => {
+    const h = document.createElement('span');
+    h.className = 'col-resizer';
+    h.title = 'Drag to resize · double-click to reset';
+    th.appendChild(h);
+    h.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      const ws = freeze();
+      const startX = e.clientX, a = ws[i], b = ws[i+1], min = 36;
+      h.setPointerCapture(e.pointerId);
+      h.classList.add('active');
+      document.body.classList.add('col-resizing');
+      const move = ev => {
+        const d = Math.max(min - a, Math.min(b - min, ev.clientX - startX));
+        cols[i].style.width = (a + d) + 'px';
+        cols[i+1].style.width = (b - d) + 'px';
+      };
+      const up = () => {
+        h.removeEventListener('pointermove', move);
+        h.removeEventListener('pointerup', up);
+        h.removeEventListener('pointercancel', up);
+        h.classList.remove('active');
+        document.body.classList.remove('col-resizing');
+      };
+      h.addEventListener('pointermove', move);
+      h.addEventListener('pointerup', up);
+      h.addEventListener('pointercancel', up);
+    });
+    h.addEventListener('dblclick', () => {
+      cols.forEach(c => c.style.width = '');
+      table.classList.remove('rtable');
+    });
+  });
+  // Full text on hover for any cell that's cut off
+  table.addEventListener('mouseover', e => {
+    const el = e.target;
+    if(el.tagName === 'INPUT') el.title = el.value;
+  });
+}
+makeColumnsResizable(document.querySelector('#dataPanel table'));
+makeColumnsResizable(document.querySelector('#cooDataPanel table'));
 </script>
 </body>
 </html>
