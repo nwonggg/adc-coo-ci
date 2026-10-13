@@ -2,6 +2,9 @@
 
 ## v0.4.0 (Beta)
 
+### Shared
+- Table columns in both tools can be resized by dragging the dividers in the header (double-click a divider to reset). Hovering a cell shows its full text.
+
 ### COO Generator
 - Added **Total Box Count**. The number entered fills "No. of Pkgs, Boxes or Cases" on every row and is written into the exported COO.
 - Multiple packing slips can be uploaded together (or added one after another) and are combined into one COO.
