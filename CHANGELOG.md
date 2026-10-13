@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.4.0 (Beta)
+
+### COO Generator
+- Added **Total Box Count**. The number entered fills "No. of Pkgs, Boxes or Cases" on every row and is written into the exported COO.
+- Multiple packing slips can be uploaded together (or added one after another) and are combined into one COO.
+- Each top-level (bold) part number appears once, even if it repeats within a slip or across slips.
+- Descriptions are cut at the first ";" (for example, "Twist EF Library Prep with amp mix, 96 Samples").
+- Weight, when entered, is now written into the exported COO too.
+- Warns if combined slips have different Ship To addresses.
+- Fixed: Clear All now works even when all rows were already deleted.
+- Fixed: bold (top-fill) rows are now detected from the actual font, so slips with more bold than regular rows (like Q-730584) parse correctly.
+- Fixed: rows on page 2+ of a packing slip are now read.
+- Fixed: tall multi-line descriptions no longer bleed into the neighbouring row.
+- Fixed: no more double comma in Address Line 2.
+
 ## v0.3.0 (Beta)
 
 ### ADC Generator
