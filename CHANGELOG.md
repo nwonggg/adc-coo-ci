@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.0 (Beta)
+
+### ADC Generator
+- Multiple pick lists can be uploaded together (or added one after another) and are combined into one ADC.
+- New **Order #** column: each row keeps the order it came from, and that's what goes into the export's Order Number column.
+- With more than one order loaded, the top Order Number field shows all of them (read-only) and the file is named with every order, e.g. `ADC_Q-734886_Q-730584.xlsx`.
+- Grab lot dates and paste-to-fill fill every row with that lot, across all orders.
+
 ## v0.4.0 (Beta)
 
 ### Shared
