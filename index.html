@@ -500,10 +500,10 @@
   <div class="panel" id="uploadPanel">
     <div id="dropzone">
       <div class="icon">📄</div>
-      <div class="main">Drop a pick list PDF here, or click to choose</div>
-      <div class="sub">Parses Part #, Quantity, and Lot # for every line item</div>
+      <div class="main">Drop one or more pick list PDFs here, or click to choose</div>
+      <div class="sub">Parses Part #, Quantity, and Lot # for every line item, keeping each order's rows labelled</div>
     </div>
-    <input type="file" id="fileInput" accept="application/pdf">
+    <input type="file" id="fileInput" accept="application/pdf" multiple>
     <div class="status-row hidden" id="statusRow">
       <div class="file-chip" id="fileChip"></div>
     </div>
@@ -531,6 +531,7 @@
       <thead>
         <tr>
           <th class="rownum">#</th>
+          <th>Order #</th>
           <th>Part Number</th>
           <th>Quantity</th>
           <th>Batch# / Lot#</th>
@@ -711,7 +712,7 @@ const clearBtn = document.getElementById('clearBtn');
 const exportBtn = document.getElementById('exportBtn');
 const toast = document.getElementById('toast');
 
-let pendingFile = null;
+let pendingFiles = [];
 
 function showToast(msg, isErr){
   toast.textContent = msg;
@@ -725,26 +726,30 @@ dropzone.addEventListener('dragleave', ()=> dropzone.classList.remove('drag'));
 dropzone.addEventListener('drop', e=>{
   e.preventDefault();
   dropzone.classList.remove('drag');
-  if(e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]);
+  if(e.dataTransfer.files.length) selectFiles(e.dataTransfer.files);
 });
 fileInput.addEventListener('change', e=>{
-  if(e.target.files.length) selectFile(e.target.files[0]);
+  if(e.target.files.length) selectFiles(e.target.files);
+  e.target.value = '';
 });
 uploadBtn.addEventListener('click', ()=> fileInput.click());
 
-function selectFile(file){
-  if(file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')){
-    showToast('Please upload a PDF file', true);
-    return;
-  }
-  pendingFile = file;
-  fileChip.innerHTML = `📄 <b>${file.name}</b>`;
+function selectFiles(fileList){
+  const files = Array.from(fileList);
+  const pdfs = files.filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+  if(pdfs.length < files.length) showToast('Only PDF files can be used. Other files were skipped.', true);
+  if(!pdfs.length) return;
+  // Adds to what's already selected, so pick lists can be picked one at a time or together
+  pdfs.forEach(f => {
+    if(!pendingFiles.some(p => p.name === f.name && p.size === f.size)) pendingFiles.push(f);
+  });
+  fileChip.innerHTML = pendingFiles.map(f => `📄 <b>${escapeHtml(f.name)}</b>`).join('<br>');
   statusRow.classList.remove('hidden');
   submitBtn.disabled = false;
 }
 
 clearUploadBtn.addEventListener('click', () => {
-  pendingFile = null;
+  pendingFiles = [];
   fileInput.value = '';
   statusRow.classList.add('hidden');
   fileChip.innerHTML = '';
@@ -752,32 +757,62 @@ clearUploadBtn.addEventListener('click', () => {
 });
 
 submitBtn.addEventListener('click', () => {
-  if(pendingFile) handleFile(pendingFile);
+  if(pendingFiles.length) handleFiles(pendingFiles);
 });
 
-async function handleFile(file){
+// More than one order loaded: the top Order Number field becomes a read-only summary,
+// and each row's own Order # is what goes into the export.
+function adcOrders(){
+  return [...new Set(rows.map(r => (r.order || '').trim()).filter(Boolean))];
+}
+function updateOrderField(){
+  const orders = adcOrders();
+  const multi = orders.length > 1;
+  orderNumberInput.readOnly = multi;
+  orderNumberInput.title = multi ? 'Several orders loaded. Edit the Order # column instead.' : '';
+  orderNumberInput.style.width = multi ? Math.min(560, 40 + orders.join(', ').length * 8.5) + 'px' : '';
+  if(multi) orderNumberInput.value = orders.join(', ');
+}
+
+// Editing the top field (single order) updates every row
+orderNumberInput.addEventListener('input', () => {
+  if(orderNumberInput.readOnly) return;
+  const v = orderNumberInput.value.trim();
+  rows.forEach(r => { r.order = v; });
+  rowsBody.querySelectorAll('input[data-field="order"]').forEach(inp => inp.value = v);
+});
+
+async function handleFiles(files){
   const originalLabel = submitBtn.textContent;
   submitBtn.disabled = true;
   submitBtn.textContent = 'Parsing…';
   try{
-    const buf = await file.arrayBuffer();
-    const { orderNumber, lineItems } = await parsePickListPdf(buf);
-
-    if(!lineItems.length){
-      showToast('No line items detected — check the PDF format or add rows manually', true);
-    } else {
-      showToast(`Parsed ${lineItems.length} line item${lineItems.length===1?'':'s'}`);
+    const newRows = [];
+    const failed = [];
+    let parsedSlips = 0;
+    for(const file of files){
+      try{
+        const { orderNumber, lineItems } = await parsePickListPdf(await file.arrayBuffer());
+        parsedSlips++;
+        lineItems.forEach(li => newRows.push({
+          id: rowId++, order: orderNumber || '', part: li.part, qty: li.qty, lot: li.lot, mfg: '', exp: ''
+        }));
+      }catch(err){
+        console.error(err);
+        failed.push(file.name);
+      }
     }
 
-    orderNumberInput.value = orderNumber || '';
-    rows = lineItems.map(li => ({
-      id: rowId++,
-      part: li.part,
-      qty: li.qty,
-      lot: li.lot,
-      mfg: '',
-      exp: ''
-    }));
+    rows = newRows;
+    const orders = adcOrders();
+    if(failed.length) showToast(`Could not read: ${failed.join(', ')}`, true);
+    else if(!rows.length) showToast('No line items detected — check the PDF format or add rows manually', true);
+    else showToast(`Parsed ${rows.length} line item${rows.length===1?'':'s'} from ${parsedSlips} pick list${parsedSlips===1?'':'s'}` +
+                   (orders.length > 1 ? ` (${orders.length} orders)` : ''));
+
+    orderNumberInput.readOnly = false;
+    orderNumberInput.value = orders.length === 1 ? orders[0] : '';
+    updateOrderField();
 
     dataPanel.style.display = 'block';
     lineItemsEyebrow.style.display = 'block';
@@ -785,7 +820,7 @@ async function handleFile(file){
     renderRows();
   }catch(err){
     console.error(err);
-    showToast('Could not read that PDF: ' + (err && err.message ? err.message : 'unknown error'), true);
+    showToast('Could not read those PDFs: ' + (err && err.message ? err.message : 'unknown error'), true);
   }finally{
     submitBtn.disabled = false;
     submitBtn.textContent = originalLabel;
@@ -850,6 +885,7 @@ function renderRows(){
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td class="rownum">${idx+1}</td>
+      <td><input type="text" data-field="order" value="${escapeHtml(r.order || '')}" placeholder="Q-000000"></td>
       <td><input type="text" data-field="part" value="${escapeHtml(r.part)}"></td>
       <td><input type="text" data-field="qty" value="${escapeHtml(r.qty)}"></td>
       <td><input type="text" data-field="lot" value="${escapeHtml(r.lot)}"></td>
@@ -864,6 +900,7 @@ function renderRows(){
       const field = inp.dataset.field;
       inp.addEventListener('input', () => {
         r[field] = inp.value;
+        if(field === 'order') updateOrderField();
         if(field === 'lot'){
           link.href = confluenceLookupUrl(inp.value);
           link.classList.toggle('disabled', !inp.value.trim());
@@ -1111,14 +1148,17 @@ function escapeHtml(s){
 }
 
 addRowBtn.addEventListener('click', () => {
-  rows.push({ id: rowId++, part:'', qty:'', lot:'', mfg:'', exp:'' });
+  const orders = adcOrders();
+  rows.push({ id: rowId++, order: orders.length === 1 ? orders[0] : (orderNumberInput.readOnly ? '' : orderNumberInput.value.trim()), part:'', qty:'', lot:'', mfg:'', exp:'' });
   renderRows();
 });
 
 clearBtn.addEventListener('click', () => {
-  if(!rows.length) return;
   if(confirm('Clear all line items and the order number?')){
     rows = [];
+    orderNumberInput.readOnly = false;
+    orderNumberInput.style.width = '';
+    orderNumberInput.title = '';
     orderNumberInput.value = '';
     renderRows();
     showToast('Cleared');
@@ -1134,12 +1174,15 @@ exportBtn.addEventListener('click', () => {
   if(missingDates && !confirm(`${missingDates} row${missingDates===1?' is':'s are'} still missing a date. Export anyway?`)){
     return;
   }
-  const orderNumber = orderNumberInput.value.trim();
+  const single = orderNumberInput.readOnly ? '' : orderNumberInput.value.trim();
+  const orderFor = r => (r.order || '').trim() || single;
+  const orders = [...new Set(rows.map(orderFor).filter(Boolean))];
+  const orderNumber = orders.join('_');
 
   const headers = ['Order Number','Part Nunber ','Quantity ','Batch# / Lot#','Manufacturing Date','Expiration Date '];
   const data = [headers];
   rows.forEach(r => {
-    data.push([orderNumber, r.part, r.qty, r.lot, r.mfg, r.exp]);
+    data.push([orderFor(r), r.part, r.qty, r.lot, r.mfg, r.exp]);
   });
 
   const ws = XLSX.utils.aoa_to_sheet(data);
