@@ -22,7 +22,7 @@ Fields highlighted in amber need manual entry. Fields in green were pulled from 
 
 ### ADC Generator
 
-Reads a pick list PDF and pulls out the Order Number (Q-number format, such as Q-707584) plus the Part Number, Quantity and Batch/Lot # for every line item. Export produces an `.xlsx` that matches the existing ADC template, named `ADC_<order number>.xlsx`.
+Reads one or more pick list PDFs and pulls out the Order Number (Q-number format, such as Q-707584) plus the Part Number, Quantity and Batch/Lot # for every line item. Each row keeps the order it came from in the **Order #** column, so several pick lists can go into one ADC. Export produces an `.xlsx` that matches the existing ADC template, named `ADC_<order number(s)>.xlsx`.
 
 **Filling Manufacturing and Expiration Dates:** each row has a **Look up** button that opens a Confluence search for that lot in the QC space. Open the lot release page, press Ctrl+A then Ctrl+C (Cmd on Mac), come back to the tool and paste, either into the "Fill dates from Confluence" box or anywhere on the page. The tool reads the Lot Number, Manufacturing Date and Expiration Date from the Kit Information table and fills the matching row. Rows can be done in any order. Dates use Confluence's format, YYYY-MM-DD, and dates typed by hand in other common formats are converted automatically. Export asks for confirmation if any row is still missing a date.
 
@@ -32,11 +32,11 @@ You need your own Confluence access to open the lot release pages; the tool itse
 
 ### COO Generator
 
-Reads a packing slip PDF and pulls out only the top-level kit lines (the bold rows) as Marks and Numbers, along with their descriptions and the Ship To address. Phone and email lines are dropped from the address automatically. The Date field defaults to today.
+Reads one or more packing slip PDFs and pulls out only the top-level kit lines (the bold rows) as Marks and Numbers, along with the Ship To address. Each part number is listed once, even if it appears several times on a slip or across several slips, and descriptions are shortened to the text before the first ";". Enter the **Total Box Count** once and it fills the box count on every row. Phone and email lines are dropped from the address automatically. The Date field defaults to today.
 
 Export fills in the real master COO Word template, so the Affidavit of Origin and signature blocks are preserved exactly. Long addresses are set in a smaller font so they fit the fixed-size boxes on the form. The file is named `COO_<order number>.docx`.
 
-**Still manual:** The Undersigned, Shipped on S/S, No. of Pkgs, and Weight. The S/S (carrier) value is not written into the Word file yet, so fill it in on the exported document for now.
+**Still manual:** The Undersigned, Shipped on S/S, Total Box Count, and Weight. The S/S (carrier) value is not written into the Word file yet, so fill it in on the exported document for now.
 
 ## Known limitations and work in progress
 
